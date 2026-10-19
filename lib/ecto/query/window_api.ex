@@ -160,7 +160,8 @@ defmodule Ecto.Query.WindowAPI do
 
   @doc """
   Applies the given expression as a FILTER clause against an
-  aggregate. This is currently only supported by Postgres.
+  aggregate. Not all databases support this operation. Please
+  check your database documentation.
 
       from p in Post,
            select: avg(p.value)
@@ -212,7 +213,7 @@ defmodule Ecto.Query.WindowAPI do
   to the current row. If omitted, offset defaults to 1 and default to `nil`.
 
       from e in Events,
-           windows: [w: [partition_by: e.name, order_by: e.tick],
+           windows: [w: [partition_by: e.name, order_by: e.tick]],
            select: {
              e.tick,
              e.action,

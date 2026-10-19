@@ -10,30 +10,46 @@ defmodule Ecto.Repo.Queryable do
 
   require Ecto.Query
 
-  def all(name, queryable, opts) when is_list(opts) do
+  def all(name, queryable, tuplet) do
     query =
       queryable
       |> Ecto.Queryable.to_query()
       |> Ecto.Query.Planner.ensure_select(true)
 
-    execute(:all, name, query, opts) |> elem(1)
+    execute(:all, name, query, tuplet) |> elem(1)
   end
 
-  def stream(name, queryable, opts) when is_list(opts) do
+  def all_by(name, queryable, clauses, tuplet) do
+    query =
+      queryable
+      |> Ecto.Query.where([], ^Enum.to_list(clauses))
+      |> Ecto.Query.Planner.ensure_select(true)
+
+    execute(:all, name, query, tuplet) |> elem(1)
+  end
+
+  def stream(_name, queryable, {adapter_meta, opts}) do
+    %{adapter: adapter, cache: cache, repo: repo} = adapter_meta
+
     query =
       queryable
       |> Ecto.Queryable.to_query()
       |> Ecto.Query.Planner.ensure_select(true)
 
-    {adapter, %{cache: cache, repo: repo} = adapter_meta} = Ecto.Repo.Registry.lookup(name)
     {query, opts} = repo.prepare_query(:stream, query, opts)
     query = attach_prefix(query, opts)
-    {query_meta, prepared, params} = Planner.query(query, :all, cache, adapter, 0)
+
+    query_cache? = Keyword.get(opts, :query_cache, true)
+
+    {query_meta, prepared, cast_params, dump_params} =
+      Planner.query(query, :all, cache, adapter, 0, query_cache?)
+
+    opts = [cast_params: cast_params] ++ opts
 
     case query_meta do
       %{select: nil} ->
         adapter_meta
-        |> adapter.stream(query_meta, prepared, params, opts)
+        |> adapter.stream(query_meta, prepared, dump_params, opts)
         |> Stream.flat_map(fn {_, nil} -> [] end)
 
       %{select: select, preloads: preloads} ->
@@ -50,7 +66,7 @@ defmodule Ecto.Repo.Queryable do
         end
 
         preprocessor = preprocessor(from, preprocess, adapter)
-        stream = adapter.stream(adapter_meta, query_meta, prepared, params, opts)
+        stream = adapter.stream(adapter_meta, query_meta, prepared, dump_params, opts)
         postprocessor = postprocessor(from, postprocess, take, adapter)
 
         stream
@@ -76,6 +92,8 @@ defmodule Ecto.Repo.Queryable do
     one!(name, query_for_get_by(queryable, clauses), opts)
   end
 
+  def reload(_name, [], _opts), do: []
+
   def reload(name, [head | _] = structs, opts) when is_list(structs) do
     results = all(name, query_for_reload(structs), opts)
 
@@ -83,13 +101,15 @@ defmodule Ecto.Repo.Queryable do
 
     for struct <- structs do
       struct_pk = Map.fetch!(struct, pk)
-      Enum.find(results, &Map.fetch!(&1, pk) == struct_pk)
+      Enum.find(results, &(Map.fetch!(&1, pk) == struct_pk))
     end
   end
 
   def reload(name, struct, opts) do
     one(name, query_for_reload([struct]), opts)
   end
+
+  def reload!(_name, [], _opts), do: []
 
   def reload!(name, [head | _] = structs, opts) when is_list(structs) do
     query = query_for_reload(structs)
@@ -99,7 +119,9 @@ defmodule Ecto.Repo.Queryable do
 
     for struct <- structs do
       struct_pk = Map.fetch!(struct, pk)
-      Enum.find(results, &Map.fetch!(&1, pk) == struct_pk) || raise "could not reload #{inspect(struct)}, maybe it doesn't exist or was deleted"
+
+      Enum.find(results, &(Map.fetch!(&1, pk) == struct_pk)) ||
+        raise "could not reload #{inspect(struct)}, maybe it doesn't exist or was deleted"
     end
   end
 
@@ -118,13 +140,12 @@ defmodule Ecto.Repo.Queryable do
 
   def exists?(name, queryable, opts) do
     queryable =
-      Query.exclude(queryable, :select)
-      |> Query.exclude(:preload)
-      |> Query.exclude(:order_by)
+      Query.exclude(queryable, :preload)
+      |> rewrite_combinations()
+      |> Query.exclude(:select)
       |> Query.exclude(:distinct)
       |> Query.select(1)
       |> Query.limit(1)
-      |> rewrite_combinations()
 
     case all(name, queryable, opts) do
       [1] -> true
@@ -134,47 +155,45 @@ defmodule Ecto.Repo.Queryable do
 
   defp rewrite_combinations(%{combinations: []} = query), do: query
 
-  defp rewrite_combinations(%{combinations: combinations} = query) do
-    combinations = Enum.map(combinations, fn {type, query} ->
-      {type, query |> Query.exclude(:select) |> Query.select(1)}
-    end)
-
-    %{query | combinations: combinations}
+  defp rewrite_combinations(query) do
+    query
+    |> Query.subquery()
+    |> Queryable.Ecto.SubQuery.to_query()
   end
 
-  def one(name, queryable, opts) do
-    case all(name, queryable, opts) do
+  def one(name, queryable, tuplet) do
+    case all(name, queryable, tuplet) do
       [one] -> one
       [] -> nil
       other -> raise Ecto.MultipleResultsError, queryable: queryable, count: length(other)
     end
   end
 
-  def one!(name, queryable, opts) do
-    case all(name, queryable, opts) do
+  def one!(name, queryable, tuplet) do
+    case all(name, queryable, tuplet) do
       [one] -> one
       [] -> raise Ecto.NoResultsError, queryable: queryable
       other -> raise Ecto.MultipleResultsError, queryable: queryable, count: length(other)
     end
   end
 
-  def update_all(name, queryable, [], opts) when is_list(opts) do
-    update_all(name, queryable, opts)
+  def update_all(name, queryable, [], tuplet) do
+    update_all(name, queryable, tuplet)
   end
 
-  def update_all(name, queryable, updates, opts) when is_list(opts) do
+  def update_all(name, queryable, updates, tuplet) do
     query = Query.from(queryable, update: ^updates)
-    update_all(name, query, opts)
+    update_all(name, query, tuplet)
   end
 
-  defp update_all(name, queryable, opts) do
+  defp update_all(name, queryable, tuplet) do
     query = Ecto.Queryable.to_query(queryable)
-    execute(:update_all, name, query, opts)
+    execute(:update_all, name, query, tuplet)
   end
 
-  def delete_all(name, queryable, opts) when is_list(opts) do
+  def delete_all(name, queryable, tuplet) do
     query = Ecto.Queryable.to_query(queryable)
-    execute(:delete_all, name, query, opts)
+    execute(:delete_all, name, query, tuplet)
   end
 
   @doc """
@@ -186,25 +205,32 @@ defmodule Ecto.Repo.Queryable do
     struct_load!(types, values, [{field, value} | acc], all_nil?, struct, adapter)
   end
 
-  def struct_load!([], values, _acc, true, _struct, _adapter) do
+  def struct_load!([], values, _acc, true, struct, _adapter) when struct != %{} do
     {nil, values}
   end
 
-  def struct_load!([], values, acc, false, struct, _adapter) do
+  def struct_load!([], values, acc, _all_nil?, struct, _adapter) do
     {Map.merge(struct, Map.new(acc)), values}
   end
 
   ## Helpers
 
-  defp execute(operation, name, query, opts) when is_list(opts) do
-    {adapter, %{cache: cache, repo: repo} = adapter_meta} = Ecto.Repo.Registry.lookup(name)
+  defp execute(operation, name, query, {adapter_meta, opts} = tuplet) do
+    %{adapter: adapter, cache: cache, repo: repo} = adapter_meta
+
     {query, opts} = repo.prepare_query(operation, query, opts)
     query = attach_prefix(query, opts)
-    {query_meta, prepared, params} = Planner.query(query, operation, cache, adapter, 0)
+
+    query_cache? = Keyword.get(opts, :query_cache, true)
+
+    {query_meta, prepared, cast_params, dump_params} =
+      Planner.query(query, operation, cache, adapter, 0, query_cache?)
+
+    opts = [cast_params: cast_params] ++ opts
 
     case query_meta do
       %{select: nil} ->
-        adapter.execute(adapter_meta, query_meta, prepared, params, opts)
+        adapter.execute(adapter_meta, query_meta, prepared, dump_params, opts)
 
       %{select: select, sources: sources, preloads: preloads} ->
         %{
@@ -216,13 +242,13 @@ defmodule Ecto.Repo.Queryable do
         } = select
 
         preprocessor = preprocessor(from, preprocess, adapter)
-        {count, rows} = adapter.execute(adapter_meta, query_meta, prepared, params, opts)
+        {count, rows} = adapter.execute(adapter_meta, query_meta, prepared, dump_params, opts)
         postprocessor = postprocessor(from, postprocess, take, adapter)
 
         {count,
          rows
          |> Ecto.Repo.Assoc.query(assocs, sources, preprocessor)
-         |> Ecto.Repo.Preloader.query(name, preloads, take, postprocessor, opts)}
+         |> Ecto.Repo.Preloader.query(name, preloads, take, assocs, postprocessor, tuplet)}
     end
   end
 
@@ -282,6 +308,10 @@ defmodule Ecto.Repo.Queryable do
     struct_load!(types, row, [], true, struct, adapter)
   end
 
+  defp process(row, {:source, :values, _prefix, types}, _from, adapter) do
+    values_list_load!(types, row, [], true, adapter)
+  end
+
   defp process(row, {:merge, left, right}, from, adapter) do
     {left, row} = process(row, left, from, adapter)
     {right, row} = process(row, right, from, adapter)
@@ -327,7 +357,8 @@ defmodule Ecto.Repo.Queryable do
         process_update(data, args, row, from, adapter)
 
       {data, _row} ->
-        raise BadStructError, struct: struct, term: data
+        raise ArgumentError,
+              "expected a struct named #{inspect(struct)}, got: #{inspect(data)}"
     end
   end
 
@@ -376,6 +407,11 @@ defmodule Ecto.Repo.Queryable do
     {value, row}
   end
 
+  defp process_update(nil, args, row, from, adapter) do
+    {_args, row} = process_kv(args, row, from, adapter)
+    {nil, row}
+  end
+
   defp process_update(data, args, row, from, adapter) do
     {args, row} = process_kv(args, row, from, adapter)
     data = Enum.reduce(args, data, fn {key, value}, acc -> %{acc | key => value} end)
@@ -407,8 +443,22 @@ defmodule Ecto.Repo.Queryable do
         struct = struct && " in #{inspect(struct)}"
 
         raise ArgumentError,
-              "cannot load `#{inspect(value)}` as type #{inspect(type)}#{field}#{struct}"
+              "cannot load `#{inspect(value)}` as type #{Ecto.Type.format(type)}#{field}#{struct}"
     end
+  end
+
+  defp values_list_load!([{field, type} | types], [value | values], acc, all_nil?, adapter) do
+    all_nil? = all_nil? and value == nil
+    value = load!(type, value, field, nil, adapter)
+    values_list_load!(types, values, [{field, value} | acc], all_nil?, adapter)
+  end
+
+  defp values_list_load!([], values, _acc, true, _adapter) do
+    {nil, values}
+  end
+
+  defp values_list_load!([], values, acc, false, _adapter) do
+    {Map.new(acc), values}
   end
 
   defp to_map(nil, _fields) do
@@ -451,16 +501,16 @@ defmodule Ecto.Repo.Queryable do
     Query.where(queryable, [], ^Enum.to_list(clauses))
   end
 
-  defp query_for_reload([head| _] = structs) do
+  defp query_for_reload([head | _] = structs) do
     assert_structs!(structs)
 
     schema = head.__struct__
-    prefix = head.__meta__.prefix
+    %{prefix: prefix, source: source} = head.__meta__
 
     case schema.__schema__(:primary_key) do
       [pk] ->
         keys = Enum.map(structs, &get_pk!(&1, pk))
-        query = Query.from(x in schema, where: field(x, ^pk) in ^keys)
+        query = Query.from(x in {source, schema}, where: field(x, ^pk) in ^keys)
         %{query | prefix: prefix}
 
       pks ->
@@ -476,10 +526,13 @@ defmodule Ecto.Repo.Queryable do
         %{distinct: nil, limit: nil, offset: nil, combinations: []} = query ->
           %{query | order_bys: []}
 
-        query ->
-          query
-          |> Query.subquery()
-          |> Queryable.Ecto.SubQuery.to_query()
+        %{prefix: prefix} = query ->
+          query =
+            query
+            |> Query.subquery()
+            |> Queryable.Ecto.SubQuery.to_query()
+
+          %{query | prefix: prefix}
       end
 
     select = %SelectExpr{expr: {aggregate, [], []}, file: __ENV__.file, line: __ENV__.line}
@@ -494,12 +547,15 @@ defmodule Ecto.Repo.Queryable do
         %{distinct: nil, limit: nil, offset: nil, combinations: []} = query ->
           %{query | order_bys: []}
 
-        query ->
+        %{prefix: prefix} = query ->
           select = %SelectExpr{expr: ast, file: __ENV__.file, line: __ENV__.line}
 
-          %{query | select: select}
-          |> Query.subquery()
-          |> Queryable.Ecto.SubQuery.to_query()
+          query =
+            %{query | select: select}
+            |> Query.subquery()
+            |> Queryable.Ecto.SubQuery.to_query()
+
+          %{query | prefix: prefix}
       end
 
     select = %SelectExpr{expr: {aggregate, [], [ast]}, file: __ENV__.file, line: __ENV__.line}
@@ -534,7 +590,7 @@ defmodule Ecto.Repo.Queryable do
     end
 
     unless Enum.all?(structs, &(&1.__struct__ == head.__struct__)) do
-      raise ArgumentError, "expected an homogenous list, received different struct types"
+      raise ArgumentError, "expected an homogeneous list, received different struct types"
     end
 
     :ok
@@ -548,7 +604,9 @@ defmodule Ecto.Repo.Queryable do
     |> Map.fetch!(pk)
     |> case do
       nil ->
-        raise ArgumentError, "Ecto.Repo.reload/2 expects existent structs, found a `nil` primary key"
+        raise ArgumentError,
+              "Ecto.Repo.reload/2 expects existent structs, found a `nil` primary key"
+
       key ->
         key
     end

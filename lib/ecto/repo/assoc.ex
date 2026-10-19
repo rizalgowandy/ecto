@@ -33,14 +33,24 @@ defmodule Ecto.Repo.Assoc do
   end
 
   defp merge([struct|sub_structs], {primary_keys, cache, dict, sub_dicts}, parent_key) do
-    child_key =
+    {struct, child_key} =
       if struct do
-        for primary_key <- primary_keys do
-          case Map.get(struct, primary_key) do
-            nil -> raise Ecto.NoPrimaryKeyValueError, struct: struct
-            value -> value
-          end
-        end
+        {child_key, all_nil?} =
+          Enum.map_reduce(primary_keys, true, fn primary_key, all_nil? ->
+            case struct do
+              %_{^primary_key => nil} -> raise Ecto.NoPrimaryKeyValueError, struct: struct
+              # We allow maps to be returned with all `nil` values in queries without
+              # preloads. For preloads we have to treat maps with all `nil` values as
+              # `nil` instead of a map otherwise we can't associate the missing
+              # association to the parent struct
+              %{^primary_key => value} -> {value, all_nil? and value == nil}
+              %{} -> raise Ecto.NoPrimaryKeyValueError, struct: struct
+            end
+          end)
+
+        if all_nil?, do: {nil, nil}, else: {struct, child_key}
+      else
+        {nil, nil}
       end
 
     # Traverse sub_structs adding one by one to the tree.
@@ -96,12 +106,13 @@ defmodule Ecto.Repo.Assoc do
   defp maybe_first(list, _), do: list
 
   defp create_refls(idx, fields, dicts, sources) do
-    {_source, schema, _prefix} = elem(sources, idx)
+    schema = get_assoc_schema(sources, idx)
 
     Enum.map(:lists.zip(dicts, fields), fn
       {{_primary_keys, _cache, dict, sub_dicts}, {field, {child_idx, child_fields}}} ->
+        refl = schema.__schema__(:association, field)
         sub_refls = create_refls(child_idx, child_fields, sub_dicts, sources)
-        {dict, schema.__schema__(:association, field), sub_refls}
+        {dict, refl, sub_refls}
     end)
   end
 
@@ -110,7 +121,21 @@ defmodule Ecto.Repo.Assoc do
       create_accs(child_idx, child_fields, sources, %{})
     end)
 
-    {_source, schema, _prefix} = elem(sources, idx)
-    {schema.__schema__(:primary_key), %{}, initial_dict, acc}
+    schema = get_assoc_schema(sources, idx)
+
+    case schema.__schema__(:primary_key) do
+      [] -> raise Ecto.NoPrimaryKeyFieldError, schema: schema
+      pk -> {pk, %{}, initial_dict, acc}
+    end
+  end
+
+  defp get_assoc_schema(sources, idx) do
+    case elem(sources, idx) do
+      {_, schema, _} ->
+        schema
+
+      %Ecto.SubQuery{select: {:source, {_, schema}, _, _}} ->
+        schema
+    end
   end
 end

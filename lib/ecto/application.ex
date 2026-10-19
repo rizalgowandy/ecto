@@ -3,8 +3,10 @@ defmodule Ecto.Application do
   use Application
 
   def start(_type, _args) do
+    :ok = :persistent_term.put({Ecto.UUID, :nanosecond}, :atomics.new(1, signed: false))
+
     children = [
-      Ecto.Repo.Registry,
+      Ecto.Repo.Registry
     ]
 
     opts = [strategy: :one_for_one, name: Ecto.Supervisor]

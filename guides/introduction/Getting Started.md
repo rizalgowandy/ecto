@@ -20,7 +20,7 @@ To start off with, we'll generate a new Elixir application by running this comma
 mix new friends --sup
 ```
 
-The `--sup` option ensures that this application has [a supervision tree](https://elixir-lang.org/getting-started/mix-otp/supervisor-and-application.html), which we'll need for Ecto a little later on.
+The `--sup` option ensures that this application has [a supervision tree](`Supervisor`), which we'll need for Ecto a little later on.
 
 To add Ecto to this application, there are a few steps that we need to take. The first step will be adding Ecto and a driver called Postgrex to our `mix.exs` file, which we'll do by changing the `deps` definition in that file to this:
 
@@ -46,11 +46,22 @@ against our database. If we didn't do this step, we wouldn't be able to do any
 querying at all.
 
 That's the first two steps taken now. We have installed Ecto and Postgrex as
-dependencies of our application. We now need to setup some configuration for
-Ecto so that we can perform actions on a database from within the
-application's code.
+dependencies of our application. Next let's update the `.formatter.exs`
+file so that Ecto's rules will be applied on `mix format`:
 
-We can set up this configuration by running this command:
+```elixir
+[
+  # Add this line to enable Ecto formatter rules
+  import_deps: [:ecto, :ecto_sql],
+
+  # Default Elixir project rules
+  inputs: ["{mix,.formatter}.exs", "{config,lib,test}/**/*.{ex,exs}"]
+]
+```
+
+We now need to setup some configuration for Ecto so that we can perform actions
+on a database from within the application's code. We can set up this
+configuration by running this command:
 
 ```
 mix ecto.gen.repo -r Friends.Repo
@@ -85,7 +96,7 @@ end
 
 This module is what we'll be using to query our database shortly. It uses the `Ecto.Repo` module, and the `otp_app` tells Ecto which Elixir application it can look for database configuration in. In this case, we've specified that it is the `:friends` application where Ecto can find that configuration and so Ecto will use the configuration that was set up in `config/config.exs`. Finally, we configure the database `:adapter` to Postgres.
 
-The final piece of configuration is to setup the `Friends.Repo` as a supervisor within the application's supervision tree, which we can do in `lib/friends/application.ex`, inside the `start/2` function:
+Finally, the `Friends.Repo` must be started within the application's supervision tree, which we can do in `lib/friends/application.ex`, inside the `start/2` function:
 
 ```elixir
 def start(_type, _args) do
@@ -697,9 +708,9 @@ changeset = Friends.Person.changeset(person, %{first_name: ""})
 Friends.Repo.update(changeset)
 #=> {:error,
      #Ecto.Changeset<
-       action: :update, 
+       action: :update,
        changes: %{},
-       errors: [first_name: {"can't be blank", [validation: :required]}], 
+       errors: [first_name: {"can't be blank", [validation: :required]}],
        data: #Friends.Person<>,
        valid?: false
      >}

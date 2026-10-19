@@ -1,9 +1,16 @@
+defmodule Ecto.Repo.SensitiveData do
+  @moduledoc false
+  @derive {Inspect, only: []}
+  defstruct [:data]
+end
+
 defmodule Ecto.Repo.Supervisor do
   @moduledoc false
   use Supervisor
+  require Logger
 
   @defaults [timeout: 15000, pool_size: 10]
-  @integer_url_query_params ["timeout", "pool_size"]
+  @integer_url_query_params ["timeout", "pool_size", "idle_interval"]
 
   @doc """
   Starts the repo supervisor.
@@ -17,7 +24,7 @@ defmodule Ecto.Repo.Supervisor do
   @doc """
   Retrieves the runtime configuration.
   """
-  def runtime_config(type, repo, otp_app, opts) do
+  def init_config(type, repo, otp_app, opts) do
     config = Application.get_env(otp_app, repo, [])
     config = [otp_app: otp_app] ++ (@defaults |> Keyword.merge(config) |> Keyword.merge(opts))
     config = Keyword.put_new_lazy(config, :telemetry_prefix, fn -> telemetry_prefix(repo) end)
@@ -25,7 +32,20 @@ defmodule Ecto.Repo.Supervisor do
     case repo_init(type, repo, config) do
       {:ok, config} ->
         {url, config} = Keyword.pop(config, :url)
-        {:ok, Keyword.merge(config, parse_url(url || ""))}
+        url_config = parse_url(url || "")
+
+        url_config =
+          if is_list(config[:ssl]) and url_config[:ssl] == true do
+            Logger.warning(
+              "ignoring `ssl=true` parameter in URL because `ssl` is already set in the configuration: #{inspect(config[:ssl])}"
+            )
+
+            Keyword.delete(url_config, :ssl)
+          else
+            url_config
+          end
+
+        {:ok, Keyword.merge(config, url_config)}
 
       :ignore ->
         :ignore
@@ -35,7 +55,7 @@ defmodule Ecto.Repo.Supervisor do
   defp telemetry_prefix(repo) do
     repo
     |> Module.split()
-    |> Enum.map(& &1 |> Macro.underscore() |> String.to_atom())
+    |> Enum.map(&(&1 |> Macro.underscore() |> String.to_atom()))
   end
 
   defp repo_init(type, repo, config) do
@@ -58,8 +78,9 @@ defmodule Ecto.Repo.Supervisor do
     end
 
     if Code.ensure_compiled(adapter) != {:module, adapter} do
-      raise ArgumentError, "adapter #{inspect adapter} was not compiled, " <>
-                           "ensure it is correct and it is included as a project dependency"
+      raise ArgumentError,
+            "adapter #{inspect(adapter)} was not compiled, " <>
+              "ensure it is correct and it is included as a project dependency"
     end
 
     behaviours =
@@ -96,10 +117,11 @@ defmodule Ecto.Repo.Supervisor do
       raise Ecto.InvalidURLError, url: url, message: "path should be a database name"
     end
 
-    destructure [username, password], info.userinfo && String.split(info.userinfo, ":")
+    destructure [username, password], info.userinfo && String.split(info.userinfo, ":", parts: 2)
     "/" <> database = info.path
 
     url_opts = [
+      scheme: info.scheme,
       username: username,
       password: password,
       database: database,
@@ -124,6 +146,7 @@ defmodule Ecto.Repo.Supervisor do
 
   defp parse_uri_query(%URI{query: nil}),
     do: []
+
   defp parse_uri_query(%URI{query: query} = url) do
     query
     |> URI.query_decoder()
@@ -149,8 +172,20 @@ defmodule Ecto.Repo.Supervisor do
 
       _ ->
         raise Ecto.InvalidURLError,
-              url: url,
-              message: "can not parse value `#{value}` for parameter `#{key}` as an integer"
+          url: url,
+          message: "cannot parse value `#{value}` for parameter `#{key}` as an integer"
+    end
+  end
+
+  @doc false
+  def tuplet(name, opts) do
+    adapter_meta = Ecto.Repo.Registry.lookup(name)
+
+    if opts[:stacktrace] || Map.get(adapter_meta, :stacktrace) do
+      {:current_stacktrace, stacktrace} = :erlang.process_info(self(), :current_stacktrace)
+      {adapter_meta, Keyword.put(opts, :stacktrace, stacktrace)}
+    else
+      {adapter_meta, opts}
     end
   end
 
@@ -158,10 +193,7 @@ defmodule Ecto.Repo.Supervisor do
 
   @doc false
   def init({name, repo, otp_app, adapter, opts}) do
-    # Normalize name to atom, ignore via/global names
-    name = if is_atom(name), do: name, else: nil
-
-    case runtime_config(:supervisor, repo, otp_app, opts) do
+    case init_config(:supervisor, repo, otp_app, opts) do
       {:ok, opts} ->
         :telemetry.execute(
           [:ecto, :repo, :init],
@@ -170,6 +202,9 @@ defmodule Ecto.Repo.Supervisor do
         )
 
         {:ok, child, meta} = adapter.init([repo: repo] ++ opts)
+
+        # Normalize name to atom, ignore via/global names
+        name = if is_atom(name), do: name, else: nil
         cache = Ecto.Query.Planner.new_query_cache(name)
         meta = Map.merge(meta, %{repo: repo, cache: cache})
         child_spec = wrap_child_spec(child, [name, adapter, meta])
@@ -180,11 +215,15 @@ defmodule Ecto.Repo.Supervisor do
     end
   end
 
+  def start_child(%Ecto.Repo.SensitiveData{data: {mod, fun, args}}, name, adapter, meta) do
+    start_child({mod, fun, args}, name, adapter, meta)
+  end
+
   def start_child({mod, fun, args}, name, adapter, meta) do
     case apply(mod, fun, args) do
       {:ok, pid} ->
-        meta = Map.put(meta, :pid, pid)
-        Ecto.Repo.Registry.associate(self(), name, {adapter, meta})
+        meta = Map.merge(meta, %{pid: pid, adapter: adapter})
+        Ecto.Repo.Registry.associate(self(), name, meta)
         {:ok, pid}
 
       other ->
@@ -192,11 +231,7 @@ defmodule Ecto.Repo.Supervisor do
     end
   end
 
-  defp wrap_child_spec({id, start, restart, shutdown, type, mods}, args) do
-    {id, {__MODULE__, :start_child, [start | args]}, restart, shutdown, type, mods}
-  end
-
   defp wrap_child_spec(%{start: start} = spec, args) do
-    %{spec | start: {__MODULE__, :start_child, [start | args]}}
+    %{spec | start: {__MODULE__, :start_child, [%Ecto.Repo.SensitiveData{data: start} | args]}}
   end
 end

@@ -10,7 +10,7 @@ For example, if we assume every post has an integer column named visits, we can 
 
 ```elixir
 MyApp.Repo.aggregate(MyApp.Post, :avg, :visits)
-#=> #Decimal<1743>
+#=> Decimal.new(1743)
 ```
 
 Behind the scenes, the query above translates to:
@@ -32,7 +32,7 @@ MyApp.Repo.one(
     limit: 10,
     select: avg(p.visits)
 )
-#=> #Decimal<1743>
+#=> Decimal.new(1743)
 ```
 
 Oops. The query above returned the same value as the queries before. The option `limit: 10` has no effect here since it is limiting the aggregated result and queries with aggregates return only a single row anyway. In order to retrieve the correct result, we would need to first find the top 10 posts and only then aggregate. That's exactly what `aggregate/4` does:
@@ -44,7 +44,7 @@ query =
     limit: 10
 
 MyApp.Repo.aggregate(query, :avg, :visits)
-#=> #Decimal<4682>
+#=> Decimal.new(4682)
 ```
 
 When `limit`, `offset` or `distinct` is specified in the query, `aggregate/4` automatically wraps the given query in a subquery. Therefore the query executed by `aggregate/4` above is rather equivalent to:
@@ -86,6 +86,21 @@ MyApp.Repo.one(query)
 ```
 
 Because the query does not specify a `:select` clause, it will return `select: p` where `p` is controlled by `MyApp.Post` schema. Since the query will return all fields in `MyApp.Post`, when we convert it to a subquery, all of the fields from `MyApp.Post` will be available on the parent query, such as `q.visits`. In fact, Ecto will keep the schema properties across queries. For example, if you write `q.field_that_does_not_exist`, your Ecto query won't compile.
+
+If you need to reference the parent in the subquery, you can do so using named bindings in the parent query and `Ecto.Query.API.parent_as/1` in the subquery. Here is an example:
+
+```elixir
+inner_query =
+  from c in Comment,
+    where: parent_as(:posts).id == c.post_id
+
+query =
+  from p in Post,
+    as: :posts,
+    inner_lateral_join: c in subquery(inner_query)
+
+MyApp.Repo.one(query)
+```
 
 Ecto also allows an Elixir map to be returned from a subquery, making the map keys directly available to the parent query.
 

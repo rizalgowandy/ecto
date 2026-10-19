@@ -10,69 +10,122 @@ defmodule Ecto.Query.Builder.FilterTest do
     test "handles expressions, params" do
       import Kernel, except: [==: 2, and: 2]
 
-      assert escape(:where, quote do [] end, 0, [x: 0], __ENV__) ===
-             {true, {[], []}}
+      assert escape(:where, quote(do: []), 0, [x: 0], __ENV__) ===
+               {true, {[], %{subqueries: []}}}
 
-      assert escape(:where, quote do {x.x()} == {^"foo"} end, 0, [x: 0], __ENV__) ===
-             {Macro.escape(quote do {&0.x()} == {^0} end),
-             {[{"foo", {0, :x}}], []}}
+      assert escape(:where, quote(do: {x.x} == {^"foo"}), 0, [x: 0], __ENV__) ===
+               {Macro.escape(quote(do: {&0.x()} == {^0})),
+                {[{"foo", {0, :x}}], %{subqueries: []}}}
 
-      escaped = Macro.escape(quote do &0.x() == ^0 and &0.y() == ^1 end)
-      assert {^escaped, {params, []}} =
-              escape(:where, quote do [x: ^"foo", y: ^"bar"] end, 0, [x: 0], __ENV__)
+      escaped = Macro.escape(quote(do: &0.x() == ^0 and &0.y() == ^1))
+
+      assert {^escaped, {params, %{}}} =
+               escape(:where, quote(do: [x: ^"foo", y: ^"bar"]), 0, [x: 0], __ENV__)
+
       assert [{{_, _, ["bar", :y]}, {0, :y}}, {{_, _, ["foo", :x]}, {0, :x}}] = params
     end
 
     test "raises on invalid expressions" do
       assert_raise Ecto.Query.CompileError,
-                   ~r"expected a keyword list at compile time in where, got: `\[\{1, 2\}\]`", fn ->
-        escape(:where, quote do [{1, 2}] end, 0, [], __ENV__)
-      end
+                   ~r"expected a keyword list at compile time in where, got: `\[\{1, 2\}\]`",
+                   fn ->
+                     escape(:where, quote(do: [{1, 2}]), 0, [], __ENV__)
+                   end
 
       assert_raise Ecto.Query.CompileError,
-                   ~r"Tuples can only be used in comparisons with literal tuples of the same size", fn ->
-        escape(:where, quote do {1, 2} > ^foo end, 0, [], __ENV__)
-      end
+                   ~r"Tuples can only be used in comparisons with literal tuples of the same size",
+                   fn ->
+                     escape(:where, quote(do: {1, 2} > ^foo), 0, [], __ENV__)
+                   end
     end
 
     test "raises on nils" do
       assert_raise Ecto.Query.CompileError,
-                   ~r"nil given for `x`. Comparison with nil is forbidden as it is unsafe.", fn ->
-        escape(:where, quote do [x: nil] end, 0, [], __ENV__)
-      end
+                   ~r"nil given for `x`. Comparison with nil is forbidden as it is unsafe.",
+                   fn ->
+                     escape(:where, quote(do: [x: nil]), 0, [], __ENV__)
+                   end
+    end
+
+    test "works without Ecto.Query.subquery/1" do
+      import Ecto.Query, except: [subquery: 1]
+
+      s = from(p in "posts", select: 1)
+      %{wheres: [where]} = from(p in "posts", where: exists(s))
+
+      assert Macro.to_string(where.expr) ==
+               "exists({:subquery, 0})"
     end
   end
 
   describe "at runtime" do
     test "accepts empty keyword lists" do
       query = where(from(p in "posts"), [p], ^[])
-      assert query.wheres == []
+      assert [%{expr: true, op: :and}] = query.wheres
+
+      query = where(from(p in "posts", where: p.id == 1), [p], ^[])
+      assert [%{expr: {:==, _, _}}] = query.wheres
+    end
+
+    test "keeps interpolated booleans combined with or" do
+      a = false
+      b = true
+      query = from(p in "posts", where: ^a, or_where: ^b)
+      assert [%{expr: false, op: :and}, %{expr: true, op: :or}] = query.wheres
+
+      query = from(p in "posts", where: ^b, or_where: ^a)
+      assert [%{expr: true, op: :and}, %{expr: false, op: :or}] = query.wheres
+
+      query = from(p in "posts", having: ^a, or_having: ^b)
+      assert [%{expr: false, op: :and}, %{expr: true, op: :or}] = query.havings
+
+      query = from(p in "posts", having: ^b, or_having: ^a)
+      assert [%{expr: true, op: :and}, %{expr: false, op: :or}] = query.havings
+    end
+
+    test "drops interpolated true when it is and-ed with other filters" do
+      bool = true
+
+      query = from(p in "posts", where: p.id == 1, where: ^bool)
+      assert [%{expr: {:==, _, _}}] = query.wheres
+
+      query = from(p in "posts", where: ^bool, where: p.id == 1)
+      assert [%{expr: {:==, _, _}, op: :and}] = query.wheres
+
+      query = from(p in "posts", having: ^bool, having: p.id == 1, having: ^bool)
+      assert [%{expr: {:==, _, _}, op: :and}] = query.havings
     end
 
     test "accepts keyword lists" do
       %{wheres: [where]} = where(from(p in "posts"), [p], ^[foo: 1, bar: "baz"])
+
       assert Macro.to_string(where.expr) ==
-             "&0.foo() == ^0 and &0.bar() == ^1"
+               "&0.foo() == ^0 and &0.bar() == ^1"
+
       assert where.params ==
-             [{1, {0, :foo}}, {"baz", {0, :bar}}]
+               [{1, {0, :foo}}, {"baz", {0, :bar}}]
     end
 
     test "supports dynamic expressions" do
       dynamic = dynamic([p], p.foo == ^1 and p.bar == ^"baz")
       %{wheres: [where]} = where("posts", ^dynamic)
+
       assert Macro.to_string(where.expr) ==
-             "&0.foo() == ^0 and &0.bar() == ^1"
+               "&0.foo() == ^0 and &0.bar() == ^1"
+
       assert where.params ==
-             [{1, {0, :foo}}, {"baz", {0, :bar}}]
+               [{1, {0, :foo}}, {"baz", {0, :bar}}]
     end
 
     test "in subquery" do
       s = from(p in "posts", select: p.id, where: p.public == ^true)
       %{wheres: [where]} = from(p in "posts", where: p.id in subquery(s))
+
       assert Macro.to_string(where.expr) ==
-             "&0.id() in {:subquery, 0}"
+               "&0.id() in {:subquery, 0}"
+
       assert where.params ==
-        [{:subquery, 0}]
+               [{:subquery, 0}]
     end
 
     test "supports exists subquery expressions" do
@@ -81,9 +134,10 @@ defmodule Ecto.Query.Builder.FilterTest do
       %{wheres: [where]} = from(p in "posts", where: exists(s))
 
       assert Macro.to_string(where.expr) ==
-             "exists({:subquery, 0})"
+               "exists({:subquery, 0})"
+
       assert where.params ==
-             [{:subquery, 0}]
+               [{:subquery, 0}]
     end
 
     test "supports comparison with subqueries with all and any quantifiers" do
@@ -91,10 +145,10 @@ defmodule Ecto.Query.Builder.FilterTest do
 
       assert_quantified_subquery = fn %{wheres: [where]}, expected_quantifier ->
         assert Macro.to_string(where.expr) ==
-               "&0.rating() >= #{expected_quantifier}({:subquery, 0})"
+                 "&0.rating() >= #{expected_quantifier}({:subquery, 0})"
 
         assert where.params ==
-                [{:subquery, 0}]
+                 [{:subquery, 0}]
       end
 
       all_query = from(p in "posts", where: p.rating >= all(s))
@@ -102,6 +156,18 @@ defmodule Ecto.Query.Builder.FilterTest do
 
       assert_quantified_subquery.(all_query, :all)
       assert_quantified_subquery.(any_query, :any)
+    end
+
+    test "supports scalar subqueries anywhere in the expression" do
+      s = from(p in "posts", select: avg(p.rating))
+
+      %{wheres: [where]} = from(p in "posts", where: p.rating > subquery(s), select: p.id)
+
+      assert Macro.to_string(where.expr) ==
+               "&0.rating() > {:subquery, 0}"
+
+      assert where.params ==
+               [{:subquery, 0}]
     end
 
     test "raises on invalid keywords" do

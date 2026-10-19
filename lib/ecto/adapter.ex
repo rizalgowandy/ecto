@@ -15,7 +15,7 @@ defmodule Ecto.Adapter do
     * the `:pid` key, which is the PID returned by the child spec returned in `c:init/1`
 
   """
-  @type adapter_meta :: map
+  @type adapter_meta :: %{optional(:stacktrace) => boolean(), optional(any()) => any()}
 
   @doc """
   The callback invoked in case the adapter needs to inject code.
@@ -25,7 +25,10 @@ defmodule Ecto.Adapter do
   @doc """
   Ensure all applications necessary to run the adapter are started.
   """
-  @callback ensure_all_started(config :: Keyword.t(), type :: :permanent | :transient | :temporary) ::
+  @callback ensure_all_started(
+              config :: Keyword.t(),
+              type :: :permanent | :transient | :temporary
+            ) ::
               {:ok, [atom]} | {:error, atom}
 
   @doc """
@@ -42,7 +45,7 @@ defmodule Ecto.Adapter do
   calls to the datastore to share cache information:
 
       Repo.checkout(fn ->
-        for _ <- 100 do
+        for _ <- 1..100 do
           Repo.insert!(%Post{})
         end
       end)
@@ -58,7 +61,7 @@ defmodule Ecto.Adapter do
   connection is then used in the other callbacks implementations, such as
   `Ecto.Adapter.Queryable` and `Ecto.Adapter.Schema`.
   """
-  @callback checkout(adapter_meta, config :: Keyword.t(), (() -> result)) :: result when result: var
+  @callback checkout(adapter_meta, config :: Keyword.t(), (-> result)) :: result when result: var
 
   @doc """
   Returns true if a connection has been checked out.
@@ -124,12 +127,16 @@ defmodule Ecto.Adapter do
               [(term -> {:ok, term} | :error) | Ecto.Type.t()]
 
   @doc """
-  Returns the adapter metadata from the `c:init/1` callback.
+  Returns the adapter metadata from its `c:init/1` callback.
 
-  It expects a name or a PID representing a repo.
+  It expects a process name of a repository. The name is either
+  an atom or a PID. For a given repository, you often want to
+  call this function based on the repository dynamic repo:
+
+      Ecto.Adapter.lookup_meta(repo.get_dynamic_repo())
+
   """
   def lookup_meta(repo_name_or_pid) do
-    {_, meta} = Ecto.Repo.Registry.lookup(repo_name_or_pid)
-    meta
+    Ecto.Repo.Registry.lookup(repo_name_or_pid)
   end
 end

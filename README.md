@@ -1,8 +1,9 @@
-<img width="250" src="https://github.com/elixir-ecto/ecto/raw/master/guides/images/logo.png" alt="Ecto">
+<img width="250" src="https://github.com/elixir-ecto/ecto/raw/master/guides/images/logo.png#gh-light-mode-only" alt="Ecto">
+<img width="250" src="https://github.com/elixir-ecto/ecto/raw/master/guides/images/logo-white.png#gh-dark-mode-only" alt="Ecto">
 
 ---
 
-[![Build Status](https://github.com/elixir-ecto/ecto/workflows/CI/badge.svg)](https://github.com/elixir-ecto/ecto/actions) [![Hex.pm](https://img.shields.io/hexpm/v/ecto.svg)](https://hex.pm/packages/ecto)
+[![Build Status](https://github.com/elixir-ecto/ecto/workflows/CI/badge.svg)](https://github.com/elixir-ecto/ecto/actions) [![Hex.pm](https://img.shields.io/hexpm/v/ecto.svg)](https://hex.pm/packages/ecto) [![Documentation](https://img.shields.io/badge/documentation-gray)](https://hexdocs.pm/ecto/)
 
 ## Installation
 
@@ -11,7 +12,7 @@ Add `:ecto` to the list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:ecto, "~> 3.7"}
+    {:ecto, "~> 3.10"}
   ]
 end
 ```
@@ -72,11 +73,11 @@ defmodule Sample.App do
 end
 ```
 
-Ecto is commonly used to interact with databases, such as Postgres and MySQL via [Ecto.Adapters.SQL](https://hexdocs.pm/ecto_sql) ([source code](https://github.com/elixir-ecto/ecto_sql)). Ecto is also commonly used to map data from any source into Elixir structs, whether they are backed by a database or not.
+Ecto is commonly used to interact with databases, such as PostgreSQL and MySQL via [Ecto.Adapters.SQL](https://hexdocs.pm/ecto_sql) ([source code](https://github.com/elixir-ecto/ecto_sql)). Ecto is also commonly used to map data from any source into Elixir structs, whether they are backed by a database or not.
 
 See the [getting started guide](https://hexdocs.pm/ecto/getting-started.html) and the [online documentation](https://hexdocs.pm/ecto) for more information. Other resources available are:
 
-  * [Programming Ecto](https://pragprog.com/book/wmecto/programming-ecto), by Darin Wilson and Eric Meadows-Jönsson, which guides you from fundamentals up to advanced concepts
+  * [Programming Ecto](https://pragprog.com/titles/wmecto/programming-ecto/), by Darin Wilson and Eric Meadows-Jönsson, which guides you from fundamentals up to advanced concepts
 
   * [The Little Ecto Cookbook](https://dashbit.co/ebooks/the-little-ecto-cookbook), a free ebook by Dashbit, which is a curation of the existing Ecto guides with some extra contents
 
@@ -84,21 +85,22 @@ See the [getting started guide](https://hexdocs.pm/ecto/getting-started.html) an
 
 You need to add both Ecto and the database adapter as a dependency to your `mix.exs` file. The supported databases and their adapters are:
 
-Database   | Ecto Adapter           | Dependencies
-:----------| :--------------------- | :-----------------------------------------------
-PostgreSQL | Ecto.Adapters.Postgres | [ecto_sql][ecto_sql] (requires Ecto v3.0+) + [postgrex][postgrex]
-MySQL      | Ecto.Adapters.MyXQL    | [ecto_sql][ecto_sql] (requires Ecto v3.3+) + [myxql][myxql]
-MSSQL      | Ecto.Adapters.Tds      | [ecto_sql][ecto_sql] (requires Ecto v3.4+) + [tds][tds]
-SQLite3    | Ecto.Adapters.SQLite3  | [ecto_sql][ecto_sql] (requires Ecto v3.5+) + [ecto_sqlite3][ecto_sqlite3]
-ETS        | Etso                   | [ecto][ecto] + [etso][etso]
+| Database   | Ecto Adapter             | Dependencies                                     |
+| :--------- | :----------------------- | :----------------------------------------------- |
+| PostgreSQL | Ecto.Adapters.Postgres   | [ecto_sql][ecto_sql] + [postgrex][postgrex]      |
+| MySQL      | Ecto.Adapters.MyXQL      | [ecto_sql][ecto_sql] + [myxql][myxql]            |
+| MSSQL      | Ecto.Adapters.Tds        | [ecto_sql][ecto_sql] + [tds][tds]                |
+| SQLite3    | Ecto.Adapters.SQLite3    | [ecto_sqlite3][ecto_sqlite3]                     |
+| ClickHouse | Ecto.Adapters.ClickHouse | [ecto_ch][ecto_ch]                               |
+| ETS        | Etso                     | [etso][etso]                                     |
 
-[ecto]: https://github.com/elixir-ecto/ecto
 [ecto_sql]: https://github.com/elixir-ecto/ecto_sql
 [postgrex]: https://github.com/elixir-ecto/postgrex
 [myxql]: https://github.com/elixir-ecto/myxql
 [tds]: https://github.com/livehelpnow/tds
 [ecto_sqlite3]: https://github.com/elixir-sqlite/ecto_sqlite3
 [etso]: https://github.com/evadne/etso
+[ecto_ch]: https://github.com/plausible/ecto_ch
 
 For example, if you want to use PostgreSQL, add to your `mix.exs` file:
 
@@ -123,21 +125,33 @@ defmodule MyApp.Repo do
   ...
 ```
 
+### IPv6 support
+
+If your database's host resolves to ipv6 address you should
+add `socket_options: [:inet6]` to configuration block like below:
+
+```elixir
+import Mix.Config
+
+config :my_app, MyApp.Repo,
+  hostname: "db12.dc0.comp.any",
+  socket_options: [:inet6],
+  ...
+```
+
 ## Supported Versions
 
-| Branch | Support                  |
-| ------ | ------------------------ |
-| v3.3   | Bug fixes                |
-| v3.2   | Security patches only    |
-| v3.1   | Unsupported from 02/2020 |
-| v3.0   | Unsupported from 02/2020 |
-| v2.2   | Security patches only    |
-| v2.1   | Unsupported from 10/2018 |
-| v2.0   | Unsupported from 08/2017 |
-| v1.1   | Unsupported from 03/2018 |
-| v1.0   | Unsupported from 05/2017 |
+| Branch            | Support                  |
+| ----------------- | ------------------------ |
+| v3.12             | Bug fixes                |
+| v3.11             | Security patches only    |
+| v3.10             | Security patches only    |
+| v3.9              | Security patches only    |
+| v3.8              | Security patches only    |
+| v3.7 and earlier  | Unsupported              |
 
-With the version 3.0, Ecto has become API stable. This means our main focus is on providing bug fixes and updates.
+With version 3.0, Ecto API has become stable. Our main focus is on providing
+bug fixes and incremental changes.
 
 ## Important links
 

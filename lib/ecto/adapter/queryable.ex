@@ -50,7 +50,7 @@ defmodule Ecto.Adapter.Queryable do
   Commands invoked to prepare a query.
 
   It is used on `c:Ecto.Repo.all/2`, `c:Ecto.Repo.update_all/3`,
-  and `c:Ecto.Repo.delete_all/2`. If returns a tuple, saying if
+  and `c:Ecto.Repo.delete_all/2`. It returns a tuple, indicating if
   this query can be cached or not, and the `prepared` query.
   The `prepared` query is any term that will be passed to the
   adapter's `c:execute/5`.
@@ -98,18 +98,22 @@ defmodule Ecto.Adapter.Queryable do
   @doc """
   Plans and prepares a query for the given repo, leveraging its query cache.
 
-  This operation uses the query cache if one is available.
+  This operation uses the query cache if one is available, unless
+  `query_cache: false` is passed as option, which bypasses the query cache.
   """
-  def prepare_query(operation, repo_name_or_pid, queryable) do
-    {adapter, %{cache: cache}} = Ecto.Repo.Registry.lookup(repo_name_or_pid)
+  def prepare_query(operation, repo_name_or_pid, queryable, opts \\ []) do
+    %{adapter: adapter, cache: cache} = Ecto.Repo.Registry.lookup(repo_name_or_pid)
 
-    {_meta, prepared, params} =
+    counter = Keyword.get(opts, :counter, 0)
+    query_cache? = Keyword.get(opts, :query_cache, true)
+
+    {_meta, prepared, _cast_params, dump_params} =
       queryable
       |> Ecto.Queryable.to_query()
       |> Ecto.Query.Planner.ensure_select(operation == :all)
-      |> Ecto.Query.Planner.query(operation, cache, adapter, 0)
+      |> Ecto.Query.Planner.query(operation, cache, adapter, counter, query_cache?)
 
-    {prepared, params}
+    {prepared, dump_params}
   end
 
   @doc """
@@ -120,7 +124,8 @@ defmodule Ecto.Adapter.Queryable do
   def plan_query(operation, adapter, queryable) do
     query = Ecto.Queryable.to_query(queryable)
     {query, params, _key} = Ecto.Query.Planner.plan(query, operation, adapter)
+    {cast_params, dump_params} = Enum.unzip(params)
     {query, _} = Ecto.Query.Planner.normalize(query, operation, adapter, 0)
-    {query, params}
+    {query, cast_params, dump_params}
   end
 end

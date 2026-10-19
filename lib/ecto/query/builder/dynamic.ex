@@ -4,6 +4,7 @@ defmodule Ecto.Query.Builder.Dynamic do
   @moduledoc false
 
   alias Ecto.Query.Builder
+  alias Ecto.Query.Builder.Select
 
   @doc """
   Builds a dynamic expression.
@@ -11,13 +12,14 @@ defmodule Ecto.Query.Builder.Dynamic do
   @spec build([Macro.t], Macro.t, Macro.Env.t) :: Macro.t
   def build(binding, expr, env) do
     {query, vars} = Builder.escape_binding(quote(do: query), binding, env)
-    {expr, {params, subqueries}} = Builder.escape(expr, :any, {[], []}, vars, env)
+    {expr, {params, acc}} = escape(expr, {[], %{subqueries: [], aliases: %{}}}, vars, env)
+    aliases = escape_select_aliases(acc.aliases)
     params = Builder.escape_params(params)
 
     quote do
       %Ecto.Query.DynamicExpr{fun: fn query ->
                                 _ = unquote(query)
-                                {unquote(expr), unquote(params), unquote(subqueries)}
+                                {unquote(expr), unquote(params), unquote(Enum.reverse(acc.subqueries)), unquote(aliases)}
                               end,
                               binding: unquote(Macro.escape(binding)),
                               file: unquote(env.file),
@@ -25,11 +27,30 @@ defmodule Ecto.Query.Builder.Dynamic do
     end
   end
 
+  defp escape({:selected_as, _, [_, _]} = expr, _params_acc, vars, env) do
+    Select.escape(expr, vars, env)
+  end
+
+  defp escape({:%{}, _, _} = expr, _params_acc, vars, env) do
+    Select.escape(expr, vars, env)
+  end
+
+  defp escape(expr, params_acc, vars, env) do
+    Builder.escape(expr, :any, params_acc, vars, {env, &escape_expansion/5})
+  end
+
+  defp escape_expansion(expr, _type, params_acc, vars, env) do
+    escape(expr, params_acc, vars, env)
+  end
+
+  defp escape_select_aliases(%{} = aliases), do: Builder.escape_select_aliases(aliases)
+  defp escape_select_aliases(aliases), do: aliases
+
   @doc """
   Expands a dynamic expression for insertion into the given query.
   """
   def fully_expand(query, %{file: file, line: line, binding: binding} = dynamic) do
-    {expr, {binding, params, subqueries, _count}} = expand(query, dynamic, {binding, [], [], 0})
+    {expr, {binding, params, subqueries, _aliases, _count}} = expand(query, dynamic, {binding, [], [], %{}, 0})
     {expr, binding, Enum.reverse(params), Enum.reverse(subqueries), file, line}
   end
 
@@ -40,8 +61,16 @@ defmodule Ecto.Query.Builder.Dynamic do
   list is not reversed. This is useful when the dynamic expression
   is given in the middle of an expression.
   """
+  def partially_expand(query, %{binding: binding} = dynamic, params, subqueries, aliases, count) do
+    {expr, {_binding, params, subqueries, aliases, count}} =
+      expand(query, dynamic, {binding, params, subqueries, aliases, count})
+
+    {expr, params, subqueries, aliases, count}
+  end
+
   def partially_expand(kind, query, %{binding: binding} = dynamic, params, count) do
-    {expr, {_binding, params, subqueries, count}} = expand(query, dynamic, {binding, params, [], count})
+    {expr, {_binding, params, subqueries, _aliases, count}} =
+      expand(query, dynamic, {binding, params, [], %{}, count})
 
     if subqueries != [] do
       raise ArgumentError, "subqueries are not allowed in `#{kind}` expressions"
@@ -50,27 +79,63 @@ defmodule Ecto.Query.Builder.Dynamic do
     {expr, params, count}
   end
 
-  defp expand(query, %{fun: fun}, {binding, params, subqueries, count}) do
-    {dynamic_expr, dynamic_params, dynamic_subqueries} = fun.(query)
+  defp expand(query, dynamic, acc) do
+    expand(query, dynamic, acc, %{})
+  end
 
-    Macro.postwalk(dynamic_expr, {binding, params, subqueries, count}, fn
-      {:^, meta, [ix]}, {binding, params, subqueries, count} ->
-        case Enum.fetch!(dynamic_params, ix) do
-          {%Ecto.Query.DynamicExpr{binding: new_binding} = dynamic, _} ->
-            binding = if length(new_binding) > length(binding), do: new_binding, else: binding
-            expand(query, dynamic, {binding, params, subqueries, count})
-          
-          param ->
-            {{:^, meta, [count]}, {binding, [param | params], subqueries, count + 1}}
-        end
+  defp expand(query, %{fun: fun}, {binding, params, subqueries, aliases, count}, splices) do
+    {dynamic_expr, dynamic_params, dynamic_subqueries, dynamic_aliases} = fun.(query)
+    aliases = merge_aliases(aliases, dynamic_aliases)
 
-      {:subquery, i}, {binding, params, subqueries, count} ->
-        subquery = Enum.fetch!(dynamic_subqueries, i)
-        ix = length(subqueries)
-        {{:subquery, ix}, {binding, [{:subquery, ix} | params], [subquery | subqueries], count + 1}}
+    {expr, {binding, params, subqueries, aliases, count, _splices}} =
+      Macro.postwalk(dynamic_expr, {binding, params, subqueries, aliases, count, splices}, fn
+        {:^, meta, [ix]}, {binding, params, subqueries, aliases, count, splices} ->
+          case Enum.fetch!(dynamic_params, ix) do
+            {%Ecto.Query.DynamicExpr{binding: new_binding} = dynamic, _} ->
+              binding = if length(new_binding) > length(binding), do: new_binding, else: binding
 
-      expr, acc ->
-        {expr, acc}
+              # Splice keys are indexes into the current dynamic's params, so nested dynamics
+              # must track their own splice placeholders while continuing the outer count.
+              {expr, {binding, params, subqueries, aliases, count}} =
+                expand(query, dynamic, {binding, params, subqueries, aliases, count})
+
+              {expr, {binding, params, subqueries, aliases, count, splices}}
+
+            {_, {:splice, _}} = param ->
+              case splices do
+                %{^ix => splice_count} ->
+                  {{:^, meta, [splice_count]},
+                   {binding, params, subqueries, aliases, count, splices}}
+
+                %{} ->
+                  {{:^, meta, [count]},
+                   {binding, [param | params], subqueries, aliases, count + 1,
+                    Map.put(splices, ix, count)}}
+              end
+
+            param ->
+              {{:^, meta, [count]},
+               {binding, [param | params], subqueries, aliases, count + 1, splices}}
+          end
+
+        {:subquery, i}, {binding, params, subqueries, aliases, count, splices} ->
+          subquery = Enum.fetch!(dynamic_subqueries, i)
+          ix = length(subqueries)
+
+          {{:subquery, ix},
+           {binding, [{:subquery, ix} | params], [subquery | subqueries], aliases, count + 1,
+            splices}}
+
+        expr, acc ->
+          {expr, acc}
+      end)
+
+    {expr, {binding, params, subqueries, aliases, count}}
+  end
+
+  defp merge_aliases(old_aliases, new_aliases) do
+    Enum.reduce(new_aliases, old_aliases, fn {alias, _}, aliases ->
+      Builder.add_select_alias(aliases, alias)
     end)
   end
 end

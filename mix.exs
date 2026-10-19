@@ -2,13 +2,13 @@ defmodule Ecto.MixProject do
   use Mix.Project
 
   @source_url "https://github.com/elixir-ecto/ecto"
-  @version "3.8.0-dev"
+  @version "3.15.0-dev"
 
   def project do
     [
       app: :ecto,
       version: @version,
-      elixir: "~> 1.8",
+      elixir: "~> 1.14",
       deps: deps(),
       consolidate_protocols: Mix.env() != :test,
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -19,7 +19,7 @@ defmodule Ecto.MixProject do
 
       # Docs
       name: "Ecto",
-      docs: docs()
+      docs: &docs/0
     ]
   end
 
@@ -33,17 +33,20 @@ defmodule Ecto.MixProject do
   defp deps do
     [
       {:telemetry, "~> 0.4 or ~> 1.0"},
-      {:decimal, "~> 1.6 or ~> 2.0"},
+      {:decimal, "~> 3.0"},
       {:jason, "~> 1.0", optional: true},
-      {:ex_doc, "~> 0.20", only: :docs}
+      {:ex_doc, "~> 0.38", only: :docs}
     ]
   end
 
   defp package do
     [
-      maintainers: ["Eric Meadows-Jönsson", "José Valim", "James Fish", "Michał Muskała"],
+      maintainers: ["Eric Meadows-Jönsson", "José Valim", "Felipe Stival", "Greg Rychlewski"],
       licenses: ["Apache-2.0"],
-      links: %{"GitHub" => @source_url},
+      links: %{
+        "GitHub" => @source_url,
+        "Changelog" => "https://hexdocs.pm/ecto/changelog.html"
+      },
       files:
         ~w(.formatter.exs mix.exs README.md CHANGELOG.md lib) ++
           ~w(integration_test/cases integration_test/support)
@@ -52,6 +55,17 @@ defmodule Ecto.MixProject do
 
   defp docs do
     [
+      search: [
+        %{
+          name: "Latest",
+          help: "Search latest versions of Ecto + Ecto.SQL",
+          packages: [:ecto, :ecto_sql]
+        },
+        %{
+          name: "Current version",
+          help: "Search only this project"
+        }
+      ],
       main: "Ecto",
       source_ref: "v#{@version}",
       logo: "guides/images/e.png",
@@ -60,13 +74,6 @@ defmodule Ecto.MixProject do
       skip_undefined_reference_warnings_on: ["CHANGELOG.md"],
       extras: extras(),
       groups_for_extras: groups_for_extras(),
-      groups_for_functions: [
-        group_for_function("Query API"),
-        group_for_function("Schema API"),
-        group_for_function("Transaction API"),
-        group_for_function("Runtime API"),
-        group_for_function("User callbacks")
-      ],
       groups_for_modules: [
         # Ecto,
         # Ecto.Changeset,
@@ -77,7 +84,7 @@ defmodule Ecto.MixProject do
         # Ecto.Schema.Metadata,
         # Mix.Ecto,
 
-        "Types": [
+        Types: [
           Ecto.Enum,
           Ecto.ParameterizedType,
           Ecto.Type,
@@ -104,20 +111,49 @@ defmodule Ecto.MixProject do
           Ecto.Association.NotLoaded,
           Ecto.Embedded
         ]
-      ]
+      ],
+      before_closing_body_tag: fn
+        :html ->
+          """
+          <script src="https://cdn.jsdelivr.net/npm/mermaid@10.2.3/dist/mermaid.min.js"></script>
+          <script>
+            document.addEventListener("DOMContentLoaded", function () {
+              mermaid.initialize({
+                startOnLoad: false,
+                theme: document.body.className.includes("dark") ? "dark" : "default"
+              });
+              let id = 0;
+              for (const codeEl of document.querySelectorAll("pre code.mermaid")) {
+                const preEl = codeEl.parentElement;
+                const graphDefinition = codeEl.textContent;
+                const graphEl = document.createElement("div");
+                const graphId = "mermaid-graph-" + id++;
+                mermaid.render(graphId, graphDefinition).then(({svg, bindFunctions}) => {
+                  graphEl.innerHTML = svg;
+                  bindFunctions?.(graphEl);
+                  preEl.insertAdjacentElement("afterend", graphEl);
+                  preEl.remove();
+                });
+              }
+            });
+          </script>
+          """
+
+        _ ->
+          ""
+      end
     ]
   end
 
   def extras() do
     [
       "guides/introduction/Getting Started.md",
-      "guides/introduction/Embedded Schemas.md",
-      "guides/introduction/Testing with Ecto.md",
       "guides/howtos/Aggregates and subqueries.md",
-      "guides/howtos/Composable transactions with Multi.md",
       "guides/howtos/Constraints and Upserts.md",
       "guides/howtos/Data mapping and validation.md",
+      "guides/howtos/Duration Types with Postgrex.md",
       "guides/howtos/Dynamic queries.md",
+      "guides/howtos/Embedded Schemas.md",
       "guides/howtos/Multi tenancy with query prefixes.md",
       "guides/howtos/Multi tenancy with foreign keys.md",
       "guides/howtos/Self-referencing many to many.md",
@@ -125,16 +161,20 @@ defmodule Ecto.MixProject do
       "guides/howtos/Replicas and dynamic repositories.md",
       "guides/howtos/Schemaless queries.md",
       "guides/howtos/Test factories.md",
-      "CHANGELOG.md"
+      "guides/testing/Testing with Ecto.md",
+      "guides/cheatsheets/crud.cheatmd",
+      "guides/cheatsheets/associations.cheatmd",
+      "CHANGELOG.md",
+      {"Ecto SQL guides", %{url: "https://hexdocs.pm/ecto_sql"}}
     ]
   end
 
-  defp group_for_function(group), do: {String.to_atom(group), &(&1[:group] == group)}
-
   defp groups_for_extras do
     [
-      "Introduction": ~r/guides\/introduction\/.?/,
-      "How-To's": ~r/guides\/howtos\/.?/
+      Introduction: ~r/guides\/introduction\/.?/,
+      Cheatsheets: ~r/cheatsheets\/.?/,
+      "How-To's": ~r/guides\/howtos\/.?/,
+      Testing: ~r/testing\/.?/
     ]
   end
 

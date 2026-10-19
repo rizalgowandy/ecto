@@ -152,7 +152,7 @@ defmodule Ecto.Repo.EmbeddedTest do
 
   test "duplicate pk on insert" do
     embeds = [%MyEmbed{x: "xyz", id: @uuid} |> Ecto.Changeset.change,
-              %MyEmbed{x: "abc", id: @uuid} |> Ecto.Changeset.change]
+              %MyEmbed{} |> Ecto.Changeset.change(%{x: "abc", id: @uuid})]
     changeset =
       %MySchema{}
       |> Ecto.Changeset.change
@@ -161,6 +161,31 @@ defmodule Ecto.Repo.EmbeddedTest do
     refute changeset.valid?
     errors = Ecto.Changeset.traverse_errors(changeset, fn {msg, _} -> msg end)
     assert errors == %{embeds: [%{}, %{id: ["has already been taken"]}]}
+  end
+
+  test "raise when trying to autogenerate embed primary keys with type `:id`" do
+    defmodule EmbedWithPrimaryKeyTypeId do
+      use Ecto.Schema
+
+      @primary_key {:id, :id, autogenerate: true}
+      embedded_schema do
+      end
+    end
+
+    defmodule SchemaWithPrimaryKeyTypeIdEmbed do
+      use Ecto.Schema
+
+      schema "" do
+        embeds_one :embed, EmbedWithPrimaryKeyTypeId
+      end
+    end
+
+    embed = struct(EmbedWithPrimaryKeyTypeId)
+    schema = struct(SchemaWithPrimaryKeyTypeIdEmbed, embed: embed)
+
+    assert_raise ArgumentError, ~r/cannot autogenerate `:id` primary keys/, fn ->
+      TestRepo.insert!(schema)
+    end
   end
 
   ## update
@@ -254,6 +279,22 @@ defmodule Ecto.Repo.EmbeddedTest do
     refute embed.inserted_at
     assert embed.updated_at
 
+    kw_changeset = Ecto.Changeset.put_embed(changeset, :embed, id: @uuid, x: "def")
+    schema = TestRepo.update!(kw_changeset)
+    embed = schema.embed
+    assert embed.id == @uuid
+    assert embed.x == "def"
+    refute embed.inserted_at
+    assert embed.updated_at
+
+    map_changeset = Ecto.Changeset.put_embed(changeset, :embed, %{id: @uuid, x: "def"})
+    schema = TestRepo.update!(map_changeset)
+    embed = schema.embed
+    assert embed.id == @uuid
+    assert embed.x == "def"
+    refute embed.inserted_at
+    assert embed.updated_at
+
     changeset =
       %MySchema{id: 1, embeds: [sample]}
       |> Ecto.Changeset.change
@@ -302,6 +343,27 @@ defmodule Ecto.Repo.EmbeddedTest do
       |> Ecto.Changeset.put_embed(:embeds, [])
     schema = TestRepo.update!(changeset)
     assert schema.embeds == []
+  end
+
+  test "updated_at is auto-updated" do
+    embed = %MyEmbed{x: "xyz", id: @uuid}
+    schema = TestRepo.insert!(%MySchema{id: 1, embed: embed})
+    inserted_at_orig = schema.embed.inserted_at
+    updated_at_orig = schema.embed.updated_at
+
+    embed_changeset = Ecto.Changeset.change(schema.embed, %{x: "abc"})
+
+    changeset =
+      schema
+      |> Ecto.Changeset.change()
+      |> Ecto.Changeset.put_embed(:embed, embed_changeset)
+
+    schema = TestRepo.update!(changeset)
+    inserted_at_new = schema.embed.inserted_at
+    updated_at_new = schema.embed.updated_at
+
+    assert NaiveDateTime.compare(inserted_at_new, inserted_at_orig) == :eq
+    assert NaiveDateTime.compare(updated_at_new, updated_at_orig) == :gt
   end
 
   test "returns untouched changeset on constraint mismatch on update" do
